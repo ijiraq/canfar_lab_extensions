@@ -53,9 +53,12 @@ jobs:
         run: |
           python -m venv /tmp/smoke
           /tmp/smoke/bin/pip install --upgrade pip
-          /tmp/smoke/bin/pip install dist/*.whl
-          /tmp/smoke/bin/jupyter server extension list 2>&1 | grep -q "canfar_lab_extensions.*enabled"
-          /tmp/smoke/bin/jupyter labextension list 2>&1 | grep -q "canfar_lab_extensions.*enabled.*OK"
+          /tmp/smoke/bin/pip install "jupyterlab>=4,<5" dist/*.whl
+          /tmp/smoke/bin/jupyter-server extension list 2>&1 | tee ext.txt
+          grep -q "canfar_lab_extensions.*enabled" ext.txt
+          /tmp/smoke/bin/jupyter-labextension list 2>&1 | tee lab.txt
+          grep -q "canfar_lab_extensions.*enabled.*OK" lab.txt
+          /tmp/smoke/bin/python -c "import canfar_lab_extensions, canfar.sessions; print(canfar_lab_extensions.__version__)"
 
       - uses: actions/upload-artifact@v4
         with:
