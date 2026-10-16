@@ -1,0 +1,13 @@
+/* canfar_lab_extensions */
+
+.canfar-firefly-root {
+  height: 100%;
+  width: 100%;
+  outline: none;
+}
+
+.canfar-firefly-loading {
+  padding: 1.5rem;
+  font-family: var(--jp-ui-font-family);
+  color: var(--jp-ui-font-color1);
+}

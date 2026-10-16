@@ -1,0 +1,84 @@
+name: Release
+
+# Tag `vX.Y.Z` (matching the version in pyproject.toml / package.json) to build
+# the wheel + sdist and attach them to a GitHub Release. Consumers (e.g. the
+# CANFAR sciplat-lab Dockerfile) install the wheel directly from the release URL.
+#
+# PyPI publishing is deliberately off until the package stabilises; see the
+# commented `pypi` job below.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build "jupyterlab>=4,<5" hatchling hatch-jupyter-builder
+
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          JS=$(node -p 'require("./package.json").version')
+          echo "tag=$TAG pyproject=$PY package.json=$JS"
+          test "$TAG" = "$PY" && test "$TAG" = "$JS"
+
+      - name: Build labextension
+        run: |
+          jlpm install
+          jlpm run build:prod
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Smoke-test the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/jupyter server extension list 2>&1 | grep -q "canfar_lab_extensions.*enabled"
+          /tmp/smoke/bin/jupyter labextension list 2>&1 | grep -q "canfar_lab_extensions.*enabled.*OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  # pypi:
+  #   needs: release
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: dist
+  #         path: dist
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
