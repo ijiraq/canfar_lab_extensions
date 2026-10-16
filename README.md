@@ -14,8 +14,11 @@ The wheel ships a **prebuilt** labextension, so consumers never need Node,
 
 ## Install
 
-Install into the environment that runs JupyterLab (on sciplat-lab that is the
-Lab venv, not the LSST stack environment). From a GitHub Release:
+Install into the Python environment whose `jupyter` actually serves the Lab
+session. On the CANFAR sciplat-lab image that is the `lsst-scipipe` conda env
+(the one `loadLSST.bash` activates), not the separate
+`/usr/local/share/jupyterlab/venv` the upstream RSP uses. From a GitHub
+Release:
 
 ```bash
 V=0.1.0
@@ -25,7 +28,7 @@ pip install "https://github.com/ijiraq/canfar_lab_extensions/releases/download/v
 Or with uv, targeting a specific interpreter:
 
 ```bash
-uv pip install --python /usr/local/share/jupyterlab/venv/bin/python \
+uv pip install --python /path/to/env/bin/python \
   "https://github.com/ijiraq/canfar_lab_extensions/releases/download/v${V}/canfar_lab_extensions-${V}-py3-none-any.whl"
 ```
 
@@ -37,8 +40,8 @@ jupyter server extension list
 jupyter labextension list
 ```
 
-The stock `jupyter_firefly_extensions` launcher should be disabled so only the
-CANFAR card appears:
+If `jupyter_firefly_extensions` is also installed in that environment, disable
+its launcher so only the CANFAR card appears:
 
 ```bash
 jupyter labextension disable jupyter_firefly_extensions
