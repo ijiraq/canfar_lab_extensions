@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import random
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,34 @@ from typing import Any
 
 DEFAULT_IMAGE = "images.canfar.net/skaha/firefly:2025.2"
 DEFAULT_NAME = "firefly"
+STATE_ENV = "CANFAR_FIREFLY_STATE"
+
+
+def init_state_path() -> Path:
+    """Export the per-server Firefly state path before any kernel is spawned.
+
+    Kernels copy the server environment only at first launch (restarts reuse
+    it), so the URL itself cannot be passed by env; the path to it can.
+    """
+    path = os.environ.get(STATE_ENV) or str(
+        Path(tempfile.gettempdir()) / f"canfar-firefly-{os.getpid()}.json"
+    )
+    os.environ[STATE_ENV] = path
+    return Path(path)
+
+
+def write_state(page_config: dict[str, str]) -> Path | None:
+    path = os.environ.get(STATE_ENV)
+    if not path:
+        return None
+    target = Path(path)
+    tmp = target.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(page_config), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        return None
+    return target
 
 
 def _import_session():
@@ -70,9 +100,20 @@ class FireflySession:
         return self._url
 
 
+_channel: str | None = None
+
+
 def make_channel() -> str:
-    hostname = platform.node() or "canfar"
-    return f"ffChan-{hostname}-{int(time.time())}-{random.randint(1, 100)}"
+    """Return this server's Firefly channel.
+
+    The Lab viewer binds its channel once per page load, so every ensure call
+    must hand kernels the same channel or images go to a channel nobody shows.
+    """
+    global _channel
+    if _channel is None:
+        hostname = platform.node() or "canfar"
+        _channel = f"ffChan-{hostname}-{int(time.time())}-{random.randint(1, 100)}"
+    return _channel
 
 
 def write_jupyter_firefly_config(url: str) -> Path | None:
@@ -134,6 +175,13 @@ def inject_firefly_url(server_app, url: str, channel: str) -> dict[str, str]:
         pass
 
     write_jupyter_firefly_config(url)
+    _state = write_state(page_config)
+    # region agent log
+    try:
+        with open(os.path.expanduser("~/firefly-debug-674009.log"), "a") as _f: _f.write(json.dumps({"sessionId": "674009", "runId": "post-fix", "hypothesisId": "A,E", "location": "firefly_session.py:inject_firefly_url", "message": "server wrote firefly state", "data": {"state": str(_state), "url": url, "channel": channel, "pid": os.getpid()}, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # endregion
     return page_config
 
 

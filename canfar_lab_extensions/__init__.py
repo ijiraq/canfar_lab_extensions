@@ -18,8 +18,10 @@ def _jupyter_server_extension_points() -> list[dict[str, str]]:
 
 
 def _load_jupyter_server_extension(server_app) -> None:
+    from .firefly_session import init_state_path
     from .handlers import setup_handlers
 
+    init_state_path()
     setup_handlers(server_app)
     server_app.log.info("Registered canfar_lab_extensions server extension")
 
