@@ -6,8 +6,72 @@
   outline: none;
 }
 
-.canfar-firefly-loading {
-  padding: 1.5rem;
+.canfar-firefly-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 100%;
+  padding: 2rem;
+  box-sizing: border-box;
+  text-align: center;
   font-family: var(--jp-ui-font-family);
   color: var(--jp-ui-font-color1);
+}
+
+.canfar-firefly-status-title {
+  margin: 0.5rem 0 0;
+  font-size: var(--jp-content-font-size3);
+  font-weight: 500;
+}
+
+.canfar-firefly-status-message {
+  margin: 0;
+  font-size: var(--jp-ui-font-size2);
+}
+
+.canfar-firefly-status-elapsed,
+.canfar-firefly-status-hint {
+  margin: 0;
+  max-width: 36rem;
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.canfar-firefly-error .canfar-firefly-status-message {
+  color: var(--jp-error-color1);
+}
+
+.canfar-firefly-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--jp-border-color2);
+  border-top-color: var(--jp-brand-color1);
+  border-radius: 50%;
+  animation: canfar-firefly-spin 1s linear infinite;
+}
+
+@keyframes canfar-firefly-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* While Firefly starts: grey the launcher card and spin the tab icon. */
+body.canfar-firefly-starting .jp-LauncherCard[data-category='Firefly'] {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+body.canfar-firefly-starting
+  .jp-LauncherCard[data-category='Firefly']
+  .jp-LauncherCard-icon
+  svg,
+.lm-TabBar-tab.canfar-firefly-tab-starting .lm-TabBar-tabIcon svg {
+  animation: canfar-firefly-spin 1.5s linear infinite;
+}
+
+.lm-TabBar-tab.canfar-firefly-tab-starting .lm-TabBar-tabIcon {
+  opacity: 0.6;
 }

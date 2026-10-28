@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from jupyter_server.utils import url_path_join
 
+from ..firefly_session import FireflyLauncher
 from .firefly import EnsureFireflyHandler
 from .tutorials import TutorialsHandler
 
@@ -16,7 +17,7 @@ def setup_handlers(server_app) -> None:
         (
             url_path_join(base, "canfar", "firefly", "ensure"),
             EnsureFireflyHandler,
-            {"server_app": server_app},
+            {"launcher": FireflyLauncher(server_app)},
         ),
         (
             url_path_join(base, "canfar", "tutorials"),

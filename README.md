@@ -4,8 +4,15 @@ JupyterLab server + frontend extension that brings the RSP notebook experience
 to CANFAR sciplat sessions:
 
 - **Firefly Viewer** launcher card: ensures a CANFAR (Skaha) Firefly session
-  exists, injects its URL into the running Jupyter server, and opens Firefly in
-  a Lab tab via the Firefly JS API. Nothing is started until the user clicks.
+  exists and opens Firefly in a Lab tab via the Firefly JS API. The tab opens
+  immediately with launch progress and loads the viewer once Firefly answers.
+  Nothing is started until the user clicks.
+- **Kernel Firefly sync** (IPython extension `canfar_lab_extensions.kernel`):
+  copies the Firefly URL/channel into each kernel's environment before every
+  cell, so `lsst.display.firefly` works in kernels started (or restarted)
+  before Firefly was launched. Enable it with
+  `c.InteractiveShellApp.extensions.append("canfar_lab_extensions.kernel")`
+  in `<env>/etc/ipython/ipython_kernel_config.py`.
 - **Tutorials** menu: shallow-clones a configurable git repository on first use
   and lists its notebooks for one-click opening under `$HOME`.
 
@@ -21,7 +28,7 @@ session. On the CANFAR sciplat-lab image that is the `lsst-scipipe` conda env
 Release:
 
 ```bash
-V=0.1.0
+V=0.1.2
 pip install "https://github.com/ijiraq/canfar_lab_extensions/releases/download/v${V}/canfar_lab_extensions-${V}-py3-none-any.whl"
 ```
 
@@ -60,12 +67,14 @@ deployments can override them without rebuilding.
 | `CANFAR_TUTORIALS_DEST` | `notebooks/tutorials` | Clone destination, relative to `$HOME` |
 | `CANFAR_FIREFLY_IMAGE` | `images.canfar.net/skaha/firefly:2025.2` | Image for the Firefly Skaha session |
 | `CANFAR_FIREFLY_NAME` | `firefly` | Skaha session name to create/reuse |
+| `CANFAR_FIREFLY_TIMEOUT` | `900` | Seconds to wait for the session and the Firefly service before giving up |
 
 ## Server API
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/canfar/firefly/ensure` | Create or reuse the Firefly session; returns `{fireflyURL, fireflyChannel, ...}` |
+| `POST` | `/canfar/firefly/ensure` | Start (or join) a background Firefly launch; returns its status |
+| `GET` | `/canfar/firefly/ensure` | Launch status: `{status: idle\|starting\|ready\|error, message, elapsed?, fireflyURL?, fireflyChannel?}` |
 | `GET` | `/canfar/tutorials` | Ensure the tutorials clone and list notebooks |
 
 ## Development

@@ -44,23 +44,9 @@ def sync_firefly_env(*_args) -> None:
             for name in env_names:
                 os.environ[name] = value
     _last_mtime = mtime
-    # region agent log
-    try:
-        import time
-        with open(os.path.expanduser("~/firefly-debug-674009.log"), "a") as _f: _f.write(json.dumps({"sessionId": "674009", "runId": "post-fix", "hypothesisId": "A,E", "location": "kernel.py:sync_firefly_env", "message": "kernel synced firefly env", "data": {"pid": os.getpid(), "state": path, "FIREFLY_URL": os.environ.get("FIREFLY_URL"), "fireflyURLLab": os.environ.get("fireflyURLLab"), "fireflyChannelLab": os.environ.get("fireflyChannelLab")}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # endregion
 
 
 def load_ipython_extension(ipython) -> None:
-    # region agent log
-    try:
-        import sys, time
-        with open(os.path.expanduser("~/firefly-debug-674009.log"), "a") as _f: _f.write(json.dumps({"sessionId": "674009", "runId": "post-fix", "hypothesisId": "A,E", "location": "kernel.py:load_ipython_extension", "message": "kernel extension loaded", "data": {"pid": os.getpid(), "state_env": os.environ.get(STATE_ENV), "prefix": sys.prefix, "FIREFLY_URL_at_load": os.environ.get("FIREFLY_URL")}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # endregion
     sync_firefly_env()
     ipython.events.register("pre_run_cell", sync_firefly_env)
 

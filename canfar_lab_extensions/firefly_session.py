@@ -7,14 +7,22 @@ import os
 import platform
 import random
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_IMAGE = "images.canfar.net/skaha/firefly:2025.2"
 DEFAULT_NAME = "firefly"
 STATE_ENV = "CANFAR_FIREFLY_STATE"
+ACTIVE_STATUSES = ("Running", "Pending")
+DEAD_STATUSES = ("Terminating", "Succeeded", "Completed", "Error", "Failed")
+POLL_SECONDS = 5.0
+DEFAULT_TIMEOUT = 900.0
 
 
 def init_state_path() -> Path:
@@ -58,6 +66,37 @@ def _import_session():
     return Session
 
 
+def launch_timeout() -> float:
+    try:
+        return float(os.environ.get("CANFAR_FIREFLY_TIMEOUT", DEFAULT_TIMEOUT))
+    except ValueError:
+        return DEFAULT_TIMEOUT
+
+
+def service_ready(url: str, timeout: float = 10.0) -> bool:
+    """True once Firefly serves the loader script the Lab viewer fetches.
+
+    The Skaha session reports Running well before Firefly inside it answers,
+    so the session status alone is not enough to open the viewer.
+    """
+    probe = url.rstrip("/") + "/firefly_loader.js"
+    try:
+        with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            final_path = urllib.parse.urlparse(resp.geturl()).path
+            return 200 <= resp.status < 300 and final_path.endswith("firefly_loader.js")
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _wait(deadline: float, what: str) -> None:
+    if time.monotonic() + POLL_SECONDS > deadline:
+        raise TimeoutError(
+            f"Gave up after {int(launch_timeout())}s waiting for {what}. "
+            "CANFAR may be busy; try again in a few minutes."
+        )
+    time.sleep(POLL_SECONDS)
+
+
 class FireflySession:
     """Create or reuse a Skaha Firefly session."""
 
@@ -71,32 +110,51 @@ class FireflySession:
         self.image = image or os.environ.get("CANFAR_FIREFLY_IMAGE", DEFAULT_IMAGE)
         self.session = _import_session()()
         self._url: str | None = None
-        self._info: dict[str, Any] | None = None
 
-    @property
-    def session_info(self) -> dict[str, Any]:
-        if self._info is not None:
-            return self._info
-        session_list = self.session.fetch("firefly")
-        if len(session_list) == 0:
-            self._launch()
-            session_list = self.session.fetch("firefly")
-        if not session_list:
-            raise RuntimeError("Firefly session was created but fetch returned empty")
-        self._info = session_list[0]
-        return self._info
+    def active_session(self) -> dict[str, Any] | None:
+        sessions = [
+            s for s in self.session.fetch(kind="firefly")
+            if s.get("status") in ACTIVE_STATUSES
+        ]
+        sessions.sort(key=lambda s: s.get("status") != "Running")
+        return sessions[0] if sessions else None
 
-    def _launch(self) -> None:
-        self.session.create(
-            name=self.name,
-            image=self.image,
-            kind="firefly",
-        )
+    def create(self) -> dict[str, Any]:
+        ids = self.session.create(name=self.name, image=self.image, kind="firefly")
+        if not ids:
+            raise RuntimeError(f"CANFAR did not create a Firefly session from {self.image}")
+        return {"id": ids[0], "status": "Pending"}
+
+    def refresh(self, session_id: str) -> dict[str, Any]:
+        info = self.session.info(session_id)
+        return info[0] if info else {"id": session_id, "status": "Pending"}
+
+    def wait_until_ready(self, progress: Callable[[str], None] = lambda _msg: None) -> str:
+        """Create or reuse a session and block until Firefly answers; return its URL."""
+        deadline = time.monotonic() + launch_timeout()
+        progress("Looking for an existing Firefly session on CANFAR…")
+        info = self.active_session()
+        if info is None:
+            progress("Requesting a new Firefly session from CANFAR…")
+            info = self.create()
+        while info.get("status") != "Running" or not info.get("connectURL"):
+            status = info.get("status") or "Pending"
+            if status in DEAD_STATUSES:
+                raise RuntimeError(f"Firefly session {info['id']} is {status} on CANFAR")
+            progress(f"CANFAR is scheduling Firefly session {info['id']} ({status})…")
+            _wait(deadline, "CANFAR to start the Firefly session")
+            info = self.refresh(info["id"])
+        url = info["connectURL"]
+        progress("Firefly session is running; waiting for the Firefly service to respond…")
+        while not service_ready(url):
+            _wait(deadline, f"Firefly to respond at {url}")
+        self._url = url
+        return url
 
     @property
     def url(self) -> str:
         if self._url is None:
-            self._url = self.session_info["connectURL"]
+            self.wait_until_ready()
         return self._url
 
 
@@ -175,27 +233,66 @@ def inject_firefly_url(server_app, url: str, channel: str) -> dict[str, str]:
         pass
 
     write_jupyter_firefly_config(url)
-    _state = write_state(page_config)
-    # region agent log
-    try:
-        with open(os.path.expanduser("~/firefly-debug-674009.log"), "a") as _f: _f.write(json.dumps({"sessionId": "674009", "runId": "post-fix", "hypothesisId": "A,E", "location": "firefly_session.py:inject_firefly_url", "message": "server wrote firefly state", "data": {"state": str(_state), "url": url, "channel": channel, "pid": os.getpid()}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # endregion
+    write_state(page_config)
     return page_config
 
 
-def ensure_firefly(server_app=None) -> dict[str, str]:
-    """Ensure Firefly is running and inject URL; return fireflyURL/channel."""
-    ff = FireflySession()
-    url = ff.url
-    channel = make_channel()
-    if server_app is not None:
-        return inject_firefly_url(server_app, url, channel)
-    write_jupyter_firefly_config(url)
-    return {
-        "fireflyLabExtension": "true",
-        "fireflyURL": url,
-        "fireflyHtmlFile": "",
-        "fireflyChannel": channel,
-    }
+class FireflyLauncher:
+    """Start Firefly in the background and report progress for the Lab UI.
+
+    CANFAR can take minutes to schedule a session, longer than a request
+    should block, so POST starts (or joins) a launch and GET reports status.
+    """
+
+    def __init__(self, server_app=None) -> None:
+        self.server_app = server_app
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._started = 0.0
+        self._state: dict[str, Any] = {"status": "idle", "message": ""}
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            state = dict(self._state)
+            if state["status"] == "starting":
+                state["elapsed"] = int(time.monotonic() - self._started)
+            return state
+
+    def start(self) -> dict[str, Any]:
+        """Begin or join a launch. Blocks only to re-probe an already-ready Firefly."""
+        with self._lock:
+            busy = self._thread is not None and self._thread.is_alive()
+            ready_url = self._state.get("fireflyURL") if self._state["status"] == "ready" else None
+        if busy or (ready_url and service_ready(ready_url)):
+            return self.status()
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._started = time.monotonic()
+                self._state = {"status": "starting", "message": "Contacting CANFAR…"}
+                self._thread = threading.Thread(
+                    target=self._run, name="canfar-firefly-launch", daemon=True
+                )
+                self._thread.start()
+        return self.status()
+
+    def _log(self, message: str, *args: Any) -> None:
+        log = getattr(self.server_app, "log", None)
+        if log is not None:
+            log.info("canfar_lab_extensions: " + message, *args)
+
+    def _progress(self, message: str) -> None:
+        with self._lock:
+            self._state["message"] = message
+        self._log("Firefly: %s", message)
+
+    def _run(self) -> None:
+        try:
+            url = FireflySession().wait_until_ready(self._progress)
+            config = inject_firefly_url(self.server_app, url, make_channel())
+            state: dict[str, Any] = {"status": "ready", "message": "Firefly is ready", **config}
+            self._log("Firefly ready at %s", url)
+        except Exception as exc:
+            state = {"status": "error", "message": str(exc) or exc.__class__.__name__}
+            self._log("Firefly launch failed: %s", state["message"])
+        with self._lock:
+            self._state = state
