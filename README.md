@@ -10,7 +10,10 @@ to CANFAR sciplat sessions:
 - **Kernel Firefly sync** (IPython extension `canfar_lab_extensions.kernel`):
   copies the Firefly URL/channel into each kernel's environment before every
   cell, so `lsst.display.firefly` works in kernels started (or restarted)
-  before Firefly was launched. Enable it with
+  before Firefly was launched. If Firefly is relaunched at a new URL (e.g. the
+  session was deleted from the Science Portal), it also drops
+  `display_firefly`'s cached client so the next `Display()` reconnects
+  without a kernel restart. Enable it with
   `c.InteractiveShellApp.extensions.append("canfar_lab_extensions.kernel")`
   in `<env>/etc/ipython/ipython_kernel_config.py`.
 - **Tutorials** menu: shallow-clones a configurable git repository on first use
@@ -28,7 +31,7 @@ session. On the CANFAR sciplat-lab image that is the `lsst-scipipe` conda env
 Release:
 
 ```bash
-V=0.1.2
+V=0.1.3
 pip install "https://github.com/ijiraq/canfar_lab_extensions/releases/download/v${V}/canfar_lab_extensions-${V}-py3-none-any.whl"
 ```
 
@@ -68,6 +71,7 @@ deployments can override them without rebuilding.
 | `CANFAR_FIREFLY_IMAGE` | `images.canfar.net/skaha/firefly:2025.2` | Image for the Firefly Skaha session |
 | `CANFAR_FIREFLY_NAME` | `firefly` | Skaha session name to create/reuse |
 | `CANFAR_FIREFLY_TIMEOUT` | `900` | Seconds to wait for the session and the Firefly service before giving up |
+| `CANFAR_SCIENCE_PORTAL_URL` | `https://www.canfar.net/science-portal/` | Linked from launch errors (e.g. session limit reached) |
 
 ## Server API
 

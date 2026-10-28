@@ -4,12 +4,17 @@ lsst.display.firefly reads fireflyURLLab / FIREFLY_URL from os.environ, but the
 URL only exists after the Lab launcher starts Firefly, which is usually after
 the kernel was spawned. Before each cell, copy the state the server extension
 wrote to $CANFAR_FIREFLY_STATE into os.environ.
+
+If Firefly is relaunched at a new URL (e.g. the user deleted the old session
+from the Science Portal), also drop lsst.display.firefly's cached client so the
+next Display() connects to the new instance.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 
 from .firefly_session import STATE_ENV
 
@@ -20,6 +25,29 @@ _ENV_KEYS = {
 }
 
 _last_mtime: float | None = None
+
+
+def _drop_stale_display_client(url: str) -> None:
+    # display_firefly builds its module-level client on the first Display()
+    # and never rebuilds it, even after _close().
+    ff = sys.modules.get("lsst.display.firefly.firefly")
+    client = getattr(ff, "_fireflyClient", None)
+    if client is None or str(getattr(client, "url", "")).rstrip("/") == url.rstrip("/"):
+        return
+    for close in (
+        getattr(client, "disconnect", None),
+        getattr(getattr(client, "session", None), "close", None),
+    ):
+        try:
+            if close is not None:
+                close()
+        except Exception:
+            pass
+    ff._fireflyClient = None
+    print(
+        "Firefly was restarted at a new address; create a new Display "
+        "(existing Display objects still point at the old one)."
+    )
 
 
 def sync_firefly_env(*_args) -> None:
@@ -44,6 +72,8 @@ def sync_firefly_env(*_args) -> None:
             for name in env_names:
                 os.environ[name] = value
     _last_mtime = mtime
+    if state.get("fireflyURL"):
+        _drop_stale_display_client(state["fireflyURL"])
 
 
 def load_ipython_extension(ipython) -> None:

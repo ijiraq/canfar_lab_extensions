@@ -26,6 +26,8 @@ interface IFireflyStatus {
   fireflyURL?: string;
   fireflyChannel?: string;
   fireflyHtmlFile?: string;
+  help?: string;
+  helpURL?: string;
 }
 
 const fireflyIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
@@ -49,14 +51,21 @@ async function loadFireflyApi(url: string, channel: string): Promise<any> {
   }
   if (!w.getFireflyAPI) {
     w.getFireflyAPI = initFirefly(url);
+    w.canfarFireflyURL = url;
   }
   try {
     return await w.getFireflyAPI();
   } catch (err) {
     // initFirefly caches a failed load forever; allow Retry to load again.
     w.getFireflyAPI = undefined;
+    w.canfarFireflyURL = undefined;
     throw err;
   }
+}
+
+/** URL this page loaded the Firefly JS API from; it cannot be swapped without a reload. */
+function loadedFireflyURL(): string | undefined {
+  return (window as any).canfarFireflyURL;
 }
 
 function formatElapsed(seconds: number): string {
@@ -76,6 +85,7 @@ function el(tag: string, className: string, text?: string): HTMLElement {
 
 class FireflyRootWidget extends Widget {
   private controlApp: any;
+  private viewerURL: string | undefined;
   private _launching = false;
 
   constructor(
@@ -96,9 +106,13 @@ class FireflyRootWidget extends Widget {
     return this._launching;
   }
 
-  /** Start (or retry) the launch; no-op while launching or once the viewer is up. */
+  /**
+   * Start, retry, or re-check the launch. With the viewer up this only asks
+   * the server to re-probe Firefly, which relaunches it if the session was
+   * deleted outside Lab (e.g. from the Science Portal).
+   */
   launch(): void {
-    if (this._launching || this.controlApp) {
+    if (this._launching) {
       return;
     }
     void this.run();
@@ -114,9 +128,17 @@ class FireflyRootWidget extends Widget {
 
   private async run(): Promise<void> {
     this.setLaunching(true);
-    this.showStatus('Contacting CANFAR…');
+    if (!this.controlApp) {
+      this.showStatus('Contacting CANFAR…');
+    }
     try {
       let state = await fireflyRequest('POST');
+      if (this.isDisposed) {
+        return;
+      }
+      if (state.status === 'ready' && this.controlApp && state.fireflyURL === this.viewerURL) {
+        return;
+      }
       while (state.status === 'starting') {
         this.showStatus(state.message, state.elapsed);
         await new Promise(resolve => setTimeout(resolve, POLL_MS));
@@ -125,16 +147,26 @@ class FireflyRootWidget extends Widget {
         }
         state = await fireflyRequest('GET');
       }
+      if (state.status === 'error') {
+        this.showError(state.message, state.help, state.helpURL);
+        return;
+      }
       if (state.status !== 'ready' || !state.fireflyURL || !state.fireflyChannel) {
         throw new Error(state.message || 'Firefly did not start');
+      }
+      const loaded = loadedFireflyURL();
+      if (loaded && loaded !== state.fireflyURL) {
+        this.showReload();
+        return;
       }
       this.showStatus('Firefly is up; loading the viewer…');
       const firefly = await loadFireflyApi(state.fireflyURL, state.fireflyChannel);
       if (this.isDisposed) {
         return;
       }
-      this.node.replaceChildren();
+      this.setContent();
       this.startViewer(firefly, state.fireflyURL, state.fireflyHtmlFile);
+      this.viewerURL = state.fireflyURL;
     } catch (err) {
       if (!this.isDisposed) {
         this.showError(err instanceof Error ? err.message : String(err));
@@ -164,19 +196,59 @@ class FireflyRootWidget extends Widget {
           'working in other tabs; the viewer will appear here when it is ready.'
       )
     );
-    this.node.replaceChildren(box);
+    this.setContent(box);
   }
 
-  private showError(message: string): void {
+  private showError(message: string, help?: string, helpURL?: string): void {
     const box = el('div', 'canfar-firefly-status canfar-firefly-error');
-    const retry = el('button', 'jp-Button jp-mod-styled jp-mod-accept', 'Retry') as HTMLButtonElement;
-    retry.onclick = () => this.launch();
     box.append(
       el('h2', 'canfar-firefly-status-title', 'Firefly could not start'),
-      el('p', 'canfar-firefly-status-message', message),
-      retry
+      el('p', 'canfar-firefly-status-message', message)
     );
-    this.node.replaceChildren(box);
+    if (help) {
+      box.append(el('p', 'canfar-firefly-status-help', help));
+    }
+    const actions = el('div', 'canfar-firefly-status-actions');
+    const retry = el('button', 'jp-Button jp-mod-styled jp-mod-accept', 'Retry') as HTMLButtonElement;
+    retry.onclick = () => this.launch();
+    actions.append(retry);
+    if (helpURL) {
+      const portal = el('a', 'jp-Button jp-mod-styled jp-mod-reject', 'Open Science Portal') as HTMLAnchorElement;
+      portal.href = helpURL;
+      portal.target = '_blank';
+      portal.rel = 'noopener noreferrer';
+      actions.append(portal);
+    }
+    box.append(actions);
+    this.setContent(box);
+  }
+
+  private showReload(): void {
+    const box = el('div', 'canfar-firefly-status');
+    const reload = el('button', 'jp-Button jp-mod-styled jp-mod-accept', 'Reload page') as HTMLButtonElement;
+    reload.onclick = () => window.location.reload();
+    box.append(
+      el('h2', 'canfar-firefly-status-title', 'Firefly restarted at a new address'),
+      el(
+        'p',
+        'canfar-firefly-status-message',
+        'This page is still attached to the previous Firefly session, which is gone. ' +
+          'Save your notebooks, then reload the page to connect the viewer to the ' +
+          'new session. Running kernels are not affected.'
+      ),
+      reload
+    );
+    this.setContent(box);
+  }
+
+  /** Replace the tab contents, tearing down a rendered viewer first. */
+  private setContent(content?: HTMLElement): void {
+    if (this.controlApp) {
+      this.controlApp.unrender();
+      this.controlApp = undefined;
+      this.viewerURL = undefined;
+    }
+    this.node.replaceChildren(...(content ? [content] : []));
   }
 
   private startViewer(firefly: any, fireflyURL: string, fireflyHtmlFile?: string): void {

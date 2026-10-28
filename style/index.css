@@ -43,6 +43,24 @@
   color: var(--jp-error-color1);
 }
 
+.canfar-firefly-status-help {
+  margin: 0;
+  max-width: 36rem;
+  font-size: var(--jp-ui-font-size1);
+}
+
+.canfar-firefly-status-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.canfar-firefly-status-actions a.jp-Button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .canfar-firefly-spinner {
   width: 48px;
   height: 48px;

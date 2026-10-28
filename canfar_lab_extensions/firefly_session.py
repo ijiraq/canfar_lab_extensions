@@ -12,8 +12,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 
 DEFAULT_IMAGE = "images.canfar.net/skaha/firefly:2025.2"
@@ -23,6 +24,24 @@ ACTIVE_STATUSES = ("Running", "Pending")
 DEAD_STATUSES = ("Terminating", "Succeeded", "Completed", "Error", "Failed")
 POLL_SECONDS = 5.0
 DEFAULT_TIMEOUT = 900.0
+# Skaha counts these against the per-user interactive session limit.
+UNCOUNTED_KINDS = ("headless", "desktop-app")
+DEFAULT_PORTAL_URL = "https://www.canfar.net/science-portal/"
+
+
+class FireflyLaunchError(RuntimeError):
+    """Launch failure with user-facing guidance for the Lab tab."""
+
+    def __init__(
+        self, message: str, help_text: str | None = None, help_url: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.help_text = help_text
+        self.help_url = help_url
+
+
+def portal_url() -> str:
+    return os.environ.get("CANFAR_SCIENCE_PORTAL_URL", DEFAULT_PORTAL_URL)
 
 
 def init_state_path() -> Path:
@@ -120,10 +139,62 @@ class FireflySession:
         return sessions[0] if sessions else None
 
     def create(self) -> dict[str, Any]:
-        ids = self.session.create(name=self.name, image=self.image, kind="firefly")
+        rejections: list[str] = []
+        with self._capture_rejections(rejections):
+            ids = self.session.create(name=self.name, image=self.image, kind="firefly")
         if not ids:
-            raise RuntimeError(f"CANFAR did not create a Firefly session from {self.image}")
+            raise self._create_error(rejections[-1] if rejections else None)
         return {"id": ids[0], "status": "Pending"}
+
+    @contextmanager
+    def _capture_rejections(self, sink: list[str]) -> Iterator[None]:
+        """Collect CANFAR's error text; Session.create() only logs it and returns []."""
+
+        def capture(response) -> None:
+            if response.request.method == "POST" and response.status_code >= 400:
+                response.read()
+                sink.append(f"HTTP {response.status_code}: {response.text.strip()[:500]}")
+
+        try:
+            hooks = self.session.client.event_hooks["response"]
+            hooks.insert(0, capture)
+        except Exception:
+            hooks = None
+        try:
+            yield
+        finally:
+            if hooks is not None and capture in hooks:
+                hooks.remove(capture)
+
+    def _interactive_sessions(self) -> list[dict[str, Any]]:
+        try:
+            sessions = self.session.fetch()
+        except Exception:
+            return []
+        return [
+            s for s in sessions
+            if s.get("status") in ACTIVE_STATUSES and s.get("type") not in UNCOUNTED_KINDS
+        ]
+
+    def _create_error(self, rejection: str | None) -> FireflyLaunchError:
+        active = self._interactive_sessions()
+        listing = ", ".join(
+            f"{s.get('type', '?')} '{s.get('name', s.get('id', '?'))}' ({s.get('status')})"
+            for s in active
+        )
+        reason = rejection or "no reason was returned"
+        message = f"CANFAR did not create a Firefly session: {reason}"
+        at_limit = bool(rejection and "maximum" in rejection.lower())
+        if at_limit or (rejection is None and active):
+            help_text = (
+                "CANFAR limits how many interactive sessions (notebook, desktop, "
+                "CARTA, Firefly, …) you can run at once"
+                + (f". You currently have {len(active)} active: {listing}." if active else ".")
+                + " Delete a session you no longer need in the Science Portal, then press Retry."
+            )
+        else:
+            help_text = f"Your active sessions: {listing}." if active else None
+        return FireflyLaunchError(message, help_text=help_text, help_url=portal_url())
 
     def refresh(self, session_id: str) -> dict[str, Any]:
         info = self.session.info(session_id)
@@ -293,6 +364,9 @@ class FireflyLauncher:
             self._log("Firefly ready at %s", url)
         except Exception as exc:
             state = {"status": "error", "message": str(exc) or exc.__class__.__name__}
+            if isinstance(exc, FireflyLaunchError):
+                state["help"] = exc.help_text
+                state["helpURL"] = exc.help_url
             self._log("Firefly launch failed: %s", state["message"])
         with self._lock:
             self._state = state
