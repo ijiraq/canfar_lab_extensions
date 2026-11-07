@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse, urlunparse
 
 import tornado
@@ -21,12 +21,37 @@ DEFAULT_REPO = "https://github.com/rubin-dp0/tutorial-notebooks@prod"
 DEFAULT_DEST = "notebooks/tutorials"
 
 
-def _repo_spec() -> tuple[str, str]:
-    raw = os.environ.get("CANFAR_TUTORIALS_REPO", DEFAULT_REPO).strip()
-    if "@" not in raw:
-        raw = f"{raw}@main"
-    url, branch = raw.rsplit("@", 1)
-    return url, branch or "main"
+class RepoSpec(NamedTuple):
+    """One CANFAR_TUTORIALS_REPO item: ``[Label=]url[@branch][#subdir]``."""
+
+    label: str
+    url: str
+    branch: str
+    subdir: str
+
+
+def _parse_repo_spec(item: str) -> RepoSpec:
+    label = ""
+    scheme, sep, _ = item.partition("://")
+    if sep and "=" in scheme:
+        label, item = item.split("=", 1)
+    item, _, subdir = item.partition("#")
+    url, at, branch = item.rpartition("@")
+    # No branch given, or the "@" belongs to the URL (git@host:org/repo).
+    if not at or "/" in branch or ":" in branch:
+        url, branch = item, ""
+    return RepoSpec(
+        label=label.strip().strip("/"),
+        url=url,
+        branch=branch or "main",
+        subdir=subdir.strip("/"),
+    )
+
+
+def _repo_specs() -> list[RepoSpec]:
+    """Parse CANFAR_TUTORIALS_REPO, a whitespace- or comma-separated list."""
+    raw = os.environ.get("CANFAR_TUTORIALS_REPO", DEFAULT_REPO)
+    return [_parse_repo_spec(item) for item in raw.replace(",", " ").split()]
 
 
 def _dest_root() -> Path:
@@ -50,6 +75,8 @@ def _clone_repo(repo_url: str, branch: str, dirname: str) -> None:
         text=True,
         timeout=120,
         check=False,
+        # A missing or private repo must fail, not wait for credentials.
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
@@ -60,11 +87,14 @@ def _build_hierarchy_from(
     root: Path,
     *,
     clone_root: Path,
+    menu_root: Path,
     parent: Path,
     repo_url: str,
     branch: str,
     dest_root: Path,
 ) -> dict[str, Any]:
+    """Menu for ``root``. Download URLs are relative to ``clone_root``;
+    saved copies are relative to ``menu_root`` under ``dest_root``."""
     entries: dict[str, Any] | None = None
     subhierarchies: dict[str, Any] | None = None
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
@@ -74,6 +104,7 @@ def _build_hierarchy_from(
             child = _build_hierarchy_from(
                 entry,
                 clone_root=clone_root,
+                menu_root=menu_root,
                 parent=parent / entry.name,
                 repo_url=repo_url,
                 branch=branch,
@@ -91,7 +122,7 @@ def _build_hierarchy_from(
         src = urlunparse(
             urlparse(f"{repo_url}/raw/refs/heads/{branch}/{rest.as_posix()}")
         )
-        dest = (dest_root / rest).relative_to(Path.home()).as_posix()
+        dest = (dest_root / entry.relative_to(menu_root)).relative_to(Path.home()).as_posix()
         if entries is None:
             entries = {}
         entries[menu_name] = {
@@ -103,6 +134,39 @@ def _build_hierarchy_from(
             "dest": dest,
         }
     return {"entries": entries, "subhierarchies": subhierarchies}
+
+
+def _spec_hierarchy(spec: RepoSpec, clone: Path, dest_root: Path) -> dict[str, Any]:
+    """Menu for one spec, wrapped in a ``spec.label`` submenu if labelled."""
+    root = clone / spec.subdir if spec.subdir else clone
+    if not root.resolve().is_relative_to(clone.resolve()) or not root.is_dir():
+        raise FileNotFoundError(f"no folder {spec.subdir!r} in {spec.url}@{spec.branch}")
+    parent = Path("/") / spec.label if spec.label else Path("/")
+    hierarchy = _build_hierarchy_from(
+        root,
+        clone_root=clone,
+        menu_root=root,
+        parent=parent,
+        repo_url=spec.url,
+        branch=spec.branch,
+        dest_root=dest_root / spec.label if spec.label else dest_root,
+    )
+    if spec.label and (hierarchy["entries"] or hierarchy["subhierarchies"]):
+        return {"entries": None, "subhierarchies": {spec.label: hierarchy}}
+    return hierarchy
+
+
+def _merge_hierarchy(into: dict[str, Any], other: dict[str, Any]) -> None:
+    """Merge ``other`` into ``into``; same-name submenus merge, later entries win."""
+    if other.get("entries"):
+        into["entries"] = {**(into.get("entries") or {}), **other["entries"]}
+    for name, sub in (other.get("subhierarchies") or {}).items():
+        subs = into.get("subhierarchies") or {}
+        into["subhierarchies"] = subs
+        if name in subs:
+            _merge_hierarchy(subs[name], sub)
+        else:
+            subs[name] = sub
 
 
 def _fetch_file(src: str, dest: Path) -> None:
@@ -133,20 +197,35 @@ class TutorialsHandler(APIHandler):
         cached = self._cached_hierarchy()
         if cached is not None:
             return cached
-        repo_url, branch = _repo_spec()
+        specs = _repo_specs()
         dest_root = _dest_root()
+        hierarchy: dict[str, Any] = {"entries": None, "subhierarchies": None}
+        errors: list[str] = []
         with TemporaryDirectory() as tmp:
-            _clone_repo(repo_url, branch, tmp)
-            hierarchy = _build_hierarchy_from(
-                Path(tmp),
-                clone_root=Path(tmp),
-                parent=Path("/"),
-                repo_url=repo_url,
-                branch=branch,
-                dest_root=dest_root,
-            )
-        self._cache["timestamp"] = time.time()
-        self._cache["hierarchy"] = hierarchy
+            clones: dict[tuple[str, str], Path | Exception] = {}
+            for spec in specs:
+                key = (spec.url, spec.branch)
+                if key not in clones:
+                    path = Path(tmp) / str(len(clones))
+                    try:
+                        _clone_repo(spec.url, spec.branch, str(path))
+                        clones[key] = path
+                    except Exception as exc:
+                        clones[key] = exc
+                try:
+                    clone = clones[key]
+                    if isinstance(clone, Exception):
+                        raise clone
+                    _merge_hierarchy(hierarchy, _spec_hierarchy(spec, clone, dest_root))
+                except Exception as exc:
+                    errors.append(str(exc))
+                    self.log.warning("canfar tutorials: skipping %s: %s", spec, exc)
+        if errors and len(errors) == len(specs):
+            raise RuntimeError("; ".join(errors))
+        # Retry a partly failed menu on the next request instead of caching it.
+        if not errors:
+            self._cache["timestamp"] = time.time()
+            self._cache["hierarchy"] = hierarchy
         return hierarchy
 
     @tornado.web.authenticated

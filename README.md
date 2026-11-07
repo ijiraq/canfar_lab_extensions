@@ -16,8 +16,8 @@ to CANFAR sciplat sessions:
   without a kernel restart. Enable it with
   `c.InteractiveShellApp.extensions.append("canfar_lab_extensions.kernel")`
   in `<env>/etc/ipython/ipython_kernel_config.py`.
-- **Tutorials** menu: shallow-clones a configurable git repository on first use
-  and lists its notebooks for one-click opening under `$HOME`.
+- **Tutorials** menu: shallow-clones one or more configurable git repositories
+  on first use and lists their notebooks for one-click opening under `$HOME`.
 
 The wheel ships a **prebuilt** labextension, so consumers never need Node,
 `jlpm`, or a JupyterLab rebuild.
@@ -31,7 +31,7 @@ session. On the CANFAR sciplat-lab image that is the `lsst-scipipe` conda env
 Release:
 
 ```bash
-V=0.1.3
+V=0.1.4
 pip install "https://github.com/ijiraq/canfar_lab_extensions/releases/download/v${V}/canfar_lab_extensions-${V}-py3-none-any.whl"
 ```
 
@@ -66,12 +66,36 @@ deployments can override them without rebuilding.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CANFAR_TUTORIALS_REPO` | `https://github.com/rubin-dp0/tutorial-notebooks@prod` | `url@branch` of the tutorials repository |
-| `CANFAR_TUTORIALS_DEST` | `notebooks/tutorials` | Clone destination, relative to `$HOME` |
+| `CANFAR_TUTORIALS_REPO` | `https://github.com/rubin-dp0/tutorial-notebooks@prod` | Tutorials repositories; see below |
+| `CANFAR_TUTORIALS_DEST` | `notebooks/tutorials` | Where opened notebooks are saved, relative to `$HOME` |
 | `CANFAR_FIREFLY_IMAGE` | `images.canfar.net/skaha/firefly:2025.2` | Image for the Firefly Skaha session |
 | `CANFAR_FIREFLY_NAME` | `firefly` | Skaha session name to create/reuse |
 | `CANFAR_FIREFLY_TIMEOUT` | `900` | Seconds to wait for the session and the Firefly service before giving up |
 | `CANFAR_SCIENCE_PORTAL_URL` | `https://www.canfar.net/science-portal/` | Linked from launch errors (e.g. session limit reached) |
+
+### Tutorials repositories
+
+`CANFAR_TUTORIALS_REPO` is a whitespace- or comma-separated list. Each item is
+`[Label=]url[@branch][#subdir]`:
+
+- `@branch` defaults to `main`.
+- `#subdir` builds the menu from that folder only; otherwise the whole repo.
+- `Label=` puts that item's menu under a top-level `Label` submenu and saves
+  its notebooks under `CANFAR_TUTORIALS_DEST/Label/`. Without a label, the
+  item's folders merge at the top of the menu.
+
+Same-name submenus from different items merge; for a duplicate notebook the
+later item wins. Each folder becomes a submenu and each `.ipynb` an entry. An
+item whose clone fails, or whose `#subdir` is missing, is skipped and logged.
+The menu only errors if every item fails. Repositories must be public: notebooks
+are downloaded from `{url}/raw/refs/heads/{branch}/...` without credentials.
+
+Example (Rubin tutorials at the top, CANFAR's `sciplat-lab/` folder under a
+**CANFAR** submenu):
+
+```bash
+CANFAR_TUTORIALS_REPO="https://github.com/lsst/tutorial-notebooks@main CANFAR=https://github.com/ijiraq/canfar-tutorials@main#sciplat-lab"
+```
 
 ## Server API
 
